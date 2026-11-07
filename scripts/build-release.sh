@@ -5,7 +5,7 @@ set -e
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="$REPO_ROOT/build"
 RELEASES_DIR="$REPO_ROOT/releases"
-VERSION="1.0.0"
+VERSION="1.0.7"
 
 echo "=== 正在编译与打包 PixPin Linux v$VERSION ==="
 
@@ -18,7 +18,7 @@ strip pixpin
 
 # CPack DEB
 /home/realsky/.local/bin/cpack -G "DEB" 2>/dev/null || cpack -G "DEB"
-cp -f pixpin-*.deb "$RELEASES_DIR/pixpin_${VERSION}_amd64.deb"
+cp -f "pixpin-${VERSION}-Linux.deb" "$RELEASES_DIR/pixpin_${VERSION}_amd64.deb"
 
 # Universal Portable Tarball
 PORTABLE_DIR="/tmp/pixpin-portable/pixpin-${VERSION}-linux-x86_64"

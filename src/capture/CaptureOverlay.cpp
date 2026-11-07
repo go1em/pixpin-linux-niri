@@ -15,11 +15,10 @@
 #include <QCursor>
 #include <algorithm>
 
-CaptureOverlay::CaptureOverlay(QScreen *screen, const QPixmap &screenRawPixmap, QWidget *parent)
+CaptureOverlay::CaptureOverlay(QScreen *screen, const QPixmap &screenRawPixmap, const QImage &screenRawImage, QWidget *parent)
     : QWidget(parent, Qt::BypassWindowManagerHint | Qt::WindowStaysOnTopHint | Qt::FramelessWindowHint | Qt::Tool)
-    , m_screen(screen)
-    , m_rawPixmap(screenRawPixmap) {
-    setAttribute(Qt::WA_DeleteOnClose);
+    , m_screen(screen) {
+    // Note: Do NOT set WA_DeleteOnClose, so this overlay can be reused instantly without widget reconstruction!
     setAttribute(Qt::WA_OpaquePaintEvent, true);
     setMouseTracking(true);
 
@@ -29,26 +28,56 @@ CaptureOverlay::CaptureOverlay(QScreen *screen, const QPixmap &screenRawPixmap, 
     }
     if (m_screen) {
         setGeometry(m_screen->geometry());
+    }
+
+    setupUI();
+
+    if (!screenRawPixmap.isNull()) {
+        resetAndSetImage(screenRawPixmap, screenRawImage);
+    }
+}
+
+void CaptureOverlay::resetAndSetImage(const QPixmap &screenRawPixmap, const QImage &screenRawImage) {
+    m_rawPixmap = screenRawPixmap;
+    if (!screenRawImage.isNull()) {
+        m_rawImage = screenRawImage;
+    } else {
+        m_rawImage = m_rawPixmap.toImage();
+    }
+
+    if (m_screen) {
+        setGeometry(m_screen->geometry());
         m_scaleX = (double)m_rawPixmap.width() / m_screen->geometry().width();
         m_scaleY = (double)m_rawPixmap.height() / m_screen->geometry().height();
     }
-    m_rawImage = m_rawPixmap.toImage();
 
     // Pre-scale screenshot once to logical geometry for instant 1:1 hardware blit
     QSize logicalSize = m_screen ? m_screen->geometry().size() : size();
     if (m_rawPixmap.size() != logicalSize) {
-        m_scaledPixmap = m_rawPixmap.scaled(logicalSize, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+        m_scaledPixmap = m_rawPixmap.scaled(logicalSize, Qt::IgnoreAspectRatio, Qt::FastTransformation);
     } else {
         m_scaledPixmap = m_rawPixmap;
     }
 
-    // Pre-dim background once to avoid expensive fillRect / polygon clipping during dragging
-    m_dimmedPixmap = m_scaledPixmap.copy();
-    QPainter dimPainter(&m_dimmedPixmap);
-    dimPainter.fillRect(m_dimmedPixmap.rect(), QColor(0, 0, 0, 115));
-    dimPainter.end();
+    m_selectedRect = QRect();
+    m_selectionShape = SelectionShape::Rectangle;
+    m_state = CaptureState::Idle;
+    m_activeHandle = ResizeHandle::None;
+    setCursor(Qt::CrossCursor);
 
-    setupUI();
+    if (m_annotations) {
+        m_annotations->clear();
+        m_annotations->resetStepCounter();
+        m_annotations->setToolType(ToolType::None);
+    }
+    if (m_toolbar) {
+        m_toolbar->resetTools();
+        m_toolbar->hide();
+    }
+    if (m_magnifier) {
+        m_magnifier->show();
+    }
+    update();
 }
 
 void CaptureOverlay::setupUI() {
@@ -182,24 +211,42 @@ void CaptureOverlay::paintEvent(QPaintEvent *event) {
     QPainter p(this);
     const QRect clip = event->rect();
 
-    // 1. Only blit the background for the dirty clip region (0.09ms vs full-screen 0.89ms)
-    p.drawPixmap(clip, m_dimmedPixmap, clip);
+    // 1. Draw base screenshot for dirty clip region
+    p.drawPixmap(clip, m_scaledPixmap, clip);
 
-    if (m_selectedRect.isValid() && !m_selectedRect.isEmpty()) {
+    const QColor dimColor(0, 0, 0, 115);
+
+    if (!m_selectedRect.isValid() || m_selectedRect.isEmpty()) {
+        p.fillRect(clip, dimColor);
+    } else {
         QRect r = m_selectedRect.normalized();
-        QRect punch = r.intersected(clip);
-        if (!punch.isEmpty()) {
-            if (m_selectionShape == SelectionShape::Rectangle) {
-                p.drawPixmap(punch, m_scaledPixmap, punch);
-            } else {
-                p.save();
-                p.setRenderHint(QPainter::Antialiasing, true);
-                QPainterPath ellipsePath;
-                ellipsePath.addEllipse(r);
-                p.setClipPath(ellipsePath);
-                p.drawPixmap(punch, m_scaledPixmap, punch);
-                p.restore();
+        if (m_selectionShape == SelectionShape::Rectangle) {
+            // Fill 4 surrounding bands intersecting clip
+            if (r.top() > clip.top()) {
+                p.fillRect(QRect(clip.left(), clip.top(), clip.width(), r.top() - clip.top()), dimColor);
             }
+            if (r.bottom() < clip.bottom()) {
+                p.fillRect(QRect(clip.left(), r.bottom() + 1, clip.width(), clip.bottom() - r.bottom()), dimColor);
+            }
+            int midTop = std::max(clip.top(), r.top());
+            int midBottom = std::min(clip.bottom(), r.bottom());
+            if (midTop <= midBottom) {
+                int midHeight = midBottom - midTop + 1;
+                if (r.left() > clip.left()) {
+                    p.fillRect(QRect(clip.left(), midTop, r.left() - clip.left(), midHeight), dimColor);
+                }
+                if (r.right() < clip.right()) {
+                    p.fillRect(QRect(r.right() + 1, midTop, clip.right() - r.right(), midHeight), dimColor);
+                }
+            }
+        } else {
+            // Ellipse shape
+            QPainterPath dimPath;
+            dimPath.addRect(clip);
+            QPainterPath ellipsePath;
+            ellipsePath.addEllipse(r);
+            dimPath = dimPath.subtracted(ellipsePath);
+            p.fillPath(dimPath, dimColor);
         }
 
         // Render annotations inside selection

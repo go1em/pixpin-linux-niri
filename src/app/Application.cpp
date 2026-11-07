@@ -16,6 +16,8 @@ Application::Application(QObject *parent)
 
 Application::~Application() {
     closeAllOverlays();
+    qDeleteAll(m_activeOverlays);
+    m_activeOverlays.clear();
 }
 
 void Application::start() {
@@ -25,66 +27,30 @@ void Application::start() {
     connect(m_tray, &SystemTray::quitRequested, qApp, &QApplication::quit);
 
     m_tray->show();
+
+    // Pre-create CaptureOverlays for all connected screens so they are ready instantly!
+    initOverlays();
 }
 
-void Application::triggerCapture() {
-    closeAllOverlays();
-    m_capturer->capture();
-}
-
-void Application::closeAllOverlays() {
-    for (auto *o : m_activeOverlays) {
-        disconnect(o, nullptr, nullptr, nullptr);
-        o->close();
-    }
-    m_activeOverlays.clear();
-}
-
-void Application::pinFromClipboard() {
-    QClipboard *clipboard = QApplication::clipboard();
-    QPixmap pixmap = clipboard->pixmap();
-    if (pixmap.isNull()) {
-        QMessageBox::information(nullptr, "PixPin 提示", "剪贴板中没有可用的图像数据。");
-        return;
-    }
-    QPoint pos = QCursor::pos() - QPoint(pixmap.width() / 2, pixmap.height() / 2);
-    onPinRequested(pixmap, pos);
-}
-
-void Application::onScreenCaptured(const QPixmap &pixmap) {
-    if (pixmap.isNull()) {
-        onCaptureFailed("捕获到的屏幕图像为空");
-        return;
-    }
-
-    closeAllOverlays();
-
+void Application::initOverlays() {
     QList<QScreen *> screens = QGuiApplication::screens();
-    if (screens.isEmpty()) {
-        onCaptureFailed("未检测到有效显示器");
-        return;
+    if (m_activeOverlays.size() == screens.size()) {
+        bool matches = true;
+        for (int i = 0; i < screens.size(); ++i) {
+            if (m_activeOverlays[i]->targetScreen() != screens[i]) {
+                matches = false;
+                break;
+            }
+        }
+        if (matches) return;
     }
 
-    QRect totalGeometry;
-    for (QScreen *s : screens) {
-        totalGeometry = totalGeometry.united(s->geometry());
-    }
-
-    double ratioX = (double)pixmap.width() / totalGeometry.width();
-    double ratioY = (double)pixmap.height() / totalGeometry.height();
+    qDeleteAll(m_activeOverlays);
+    m_activeOverlays.clear();
 
     for (QScreen *s : screens) {
-        QRect screenGeo = s->geometry();
-        QRect rawRect(
-            qRound((screenGeo.x() - totalGeometry.x()) * ratioX),
-            qRound((screenGeo.y() - totalGeometry.y()) * ratioY),
-            qRound(screenGeo.width() * ratioX),
-            qRound(screenGeo.height() * ratioY)
-        );
-        rawRect = rawRect.intersected(pixmap.rect());
-        QPixmap screenRawPixmap = pixmap.copy(rawRect);
-
-        auto *overlay = new CaptureOverlay(s, screenRawPixmap);
+        auto *overlay = new CaptureOverlay(s);
+        overlay->hide();
         m_activeOverlays.append(overlay);
 
         connect(overlay, &CaptureOverlay::pinRequested, this, &Application::onPinRequested);
@@ -99,11 +65,82 @@ void Application::onScreenCaptured(const QPixmap &pixmap) {
             }
         });
 
-        // When any overlay finishes/closes, close all overlays
+        // When any overlay finishes/closes, close (hide) all overlays
         connect(overlay, &CaptureOverlay::overlayClosed, this, &Application::closeAllOverlays);
-
-        overlay->showFullScreen();
     }
+}
+
+#include <QElapsedTimer>
+
+static QElapsedTimer s_totalCaptureTimer;
+
+void Application::triggerCapture() {
+    s_totalCaptureTimer.restart();
+    closeAllOverlays();
+    m_capturer->capture();
+}
+
+void Application::closeAllOverlays() {
+    for (auto *o : m_activeOverlays) {
+        o->hide();
+    }
+}
+
+void Application::pinFromClipboard() {
+    QClipboard *clipboard = QApplication::clipboard();
+    QPixmap pixmap = clipboard->pixmap();
+    if (pixmap.isNull()) {
+        QMessageBox::information(nullptr, "PixPin 提示", "剪贴板中没有可用的图像数据。");
+        return;
+    }
+    QPoint pos = QCursor::pos() - QPoint(pixmap.width() / 2, pixmap.height() / 2);
+    onPinRequested(pixmap, pos);
+}
+
+void Application::onScreenCaptured(const QImage &image) {
+    if (image.isNull()) {
+        onCaptureFailed("捕获到的屏幕图像为空");
+        return;
+    }
+
+    initOverlays();
+
+    QList<QScreen *> screens = QGuiApplication::screens();
+    if (screens.isEmpty() || m_activeOverlays.size() != screens.size()) {
+        onCaptureFailed("未检测到有效显示器");
+        return;
+    }
+
+    QRect totalGeometry;
+    for (QScreen *s : screens) {
+        totalGeometry = totalGeometry.united(s->geometry());
+    }
+
+    double ratioX = (double)image.width() / totalGeometry.width();
+    double ratioY = (double)image.height() / totalGeometry.height();
+
+    for (int i = 0; i < screens.size(); ++i) {
+        QScreen *s = screens[i];
+        QRect screenGeo = s->geometry();
+        QRect rawRect(
+            qRound((screenGeo.x() - totalGeometry.x()) * ratioX),
+            qRound((screenGeo.y() - totalGeometry.y()) * ratioY),
+            qRound(screenGeo.width() * ratioX),
+            qRound(screenGeo.height() * ratioY)
+        );
+        rawRect = rawRect.intersected(image.rect());
+
+        QImage screenRawImage = image.copy(rawRect);
+        QPixmap screenRawPixmap = QPixmap::fromImage(screenRawImage);
+
+        auto *overlay = m_activeOverlays[i];
+        overlay->resetAndSetImage(screenRawPixmap, screenRawImage);
+        overlay->showFullScreen();
+        overlay->raise();
+        overlay->activateWindow();
+    }
+
+    qDebug() << "[PERF] Total time from triggerCapture to overlays shown:" << s_totalCaptureTimer.elapsed() << "ms";
 }
 
 void Application::onCaptureFailed(const QString &reason) {

@@ -21,8 +21,11 @@ public:
     void pinFromClipboard();
     void closeAllOverlays();
 
+private:
+    void initOverlays();
+
 private slots:
-    void onScreenCaptured(const QPixmap &pixmap);
+    void onScreenCaptured(const QImage &image);
     void onCaptureFailed(const QString &reason);
     void onPinRequested(const QPixmap &pixmap, const QPoint &pos = QPoint());
     void onOcrRequested(const QPixmap &pixmap);

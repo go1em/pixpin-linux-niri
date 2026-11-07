@@ -35,9 +35,11 @@ enum class ResizeHandle {
 class CaptureOverlay : public QWidget {
     Q_OBJECT
 public:
-    explicit CaptureOverlay(QScreen *screen, const QPixmap &screenRawPixmap, QWidget *parent = nullptr);
+    explicit CaptureOverlay(QScreen *screen, const QPixmap &screenRawPixmap = QPixmap(), const QImage &screenRawImage = QImage(), QWidget *parent = nullptr);
+    ~CaptureOverlay() override = default;
 
     QScreen *targetScreen() const { return m_screen; }
+    void resetAndSetImage(const QPixmap &screenRawPixmap, const QImage &screenRawImage = QImage());
     void clearSelection();
 
     SelectionShape selectionShape() const { return m_selectionShape; }
@@ -76,7 +78,6 @@ private:
     QScreen *m_screen = nullptr;
     QPixmap m_rawPixmap;       // High-resolution physical monitor slice
     QPixmap m_scaledPixmap;    // Screen logical size pixmap for instant 1:1 blit
-    QPixmap m_dimmedPixmap;    // Pre-dimmed background for zero-overhead repainting
     QImage m_rawImage;
     double m_scaleX = 1.0;
     double m_scaleY = 1.0;
