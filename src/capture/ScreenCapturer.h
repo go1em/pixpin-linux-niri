@@ -30,9 +30,13 @@ public slots:
 private:
     void captureX11();
     void captureWayland();
+    void captureWithGrim();
+    bool portalSupportsScreenshot();
 
     std::unique_ptr<QDBusInterface> m_portal;
     bool m_dbusConnected = false;
     bool m_isCapturing = false;
+    bool m_portalScreenshotOk = false;
+    bool m_grimAvailable = false;
     QString m_requestPath;
 };

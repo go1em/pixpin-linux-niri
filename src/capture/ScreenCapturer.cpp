@@ -14,12 +14,22 @@
 #include <QWidget>
 #include <QElapsedTimer>
 #include <QThreadPool>
+#include <QProcess>
+#include <QStandardPaths>
+#include <QDir>
+#include <QTemporaryFile>
+#include <QDBusPendingCall>
+#include <QDBusPendingCallWatcher>
+#include <QDBusReply>
 
 static QElapsedTimer s_portalTimer;
 
 ScreenCapturer::ScreenCapturer(QObject *parent)
     : QObject(parent) {
     if (isWayland()) {
+        m_grimAvailable = !QStandardPaths::findExecutable("grim").isEmpty();
+        m_portalScreenshotOk = portalSupportsScreenshot();
+
         m_portal = std::make_unique<QDBusInterface>(
             "org.freedesktop.portal.Desktop",
             "/org/freedesktop/portal/desktop",
@@ -106,11 +116,66 @@ void ScreenCapturer::captureX11() {
     }
 }
 
-void ScreenCapturer::captureWayland() {
-    if (!m_portal || !m_portal->isValid()) {
-        qWarning() << "XDG Desktop Portal not found, falling back to X11 grabWindow";
+bool ScreenCapturer::portalSupportsScreenshot() {
+    // Some systems only ship xdg-desktop-portal-gtk, which does not implement
+    // org.freedesktop.portal.Screenshot. Calling it then returns UnknownMethod
+    // and nothing happens at all, so probe once and fall back to grim instead.
+    QDBusMessage msg = QDBusMessage::createMethodCall(
+        "org.freedesktop.portal.Desktop",
+        "/org/freedesktop/portal/desktop",
+        "org.freedesktop.DBus.Introspectable",
+        "Introspect");
+
+    QDBusMessage reply = QDBusConnection::sessionBus().call(msg, QDBus::Block, 300);
+    if (reply.type() != QDBusMessage::ReplyMessage || reply.arguments().isEmpty()) {
+        return false;
+    }
+    return reply.arguments().first().toString().contains("org.freedesktop.portal.Screenshot");
+}
+
+void ScreenCapturer::captureWithGrim() {
+    // Fallback for compositors that expose wlr-screencopy / ext-image-copy-capture
+    // (niri, sway, Hyprland, ...) but have no working portal Screenshot backend.
+    QString path = QDir::tempPath() + "/pixpin-grim-" +
+                   QUuid::createUuid().toString().remove('{').remove('}').remove('-') + ".png";
+
+    QProcess proc;
+    proc.start("grim", QStringList() << "-t" << "png" << path);
+    if (!proc.waitForStarted(3000)) {
         m_isCapturing = false;
-        captureX11();
+        emit captureFailed("无法启动 grim 进行截图");
+        return;
+    }
+    if (!proc.waitForFinished(15000) || proc.exitStatus() != QProcess::NormalExit || proc.exitCode() != 0) {
+        QString err = QString::fromUtf8(proc.readAllStandardError()).trimmed();
+        QFile::remove(path);
+        m_isCapturing = false;
+        emit captureFailed("grim 截图失败" + (err.isEmpty() ? QString() : QString(": ") + err));
+        return;
+    }
+
+    QImage image(path);
+    QFile::remove(path);
+
+    m_isCapturing = false;
+    if (image.isNull()) {
+        emit captureFailed("无法解析 grim 生成的截图");
+    } else {
+        qDebug() << "[PERF] grim screenshot:" << s_portalTimer.elapsed() << "ms";
+        emit screenCaptured(image);
+    }
+}
+
+void ScreenCapturer::captureWayland() {
+    if (!m_portalScreenshotOk || !m_portal || !m_portal->isValid()) {
+        qWarning() << "No XDG Desktop Portal Screenshot backend available";
+        if (m_grimAvailable) {
+            captureWithGrim();
+            return;
+        }
+        m_isCapturing = false;
+        emit captureFailed("当前 Wayland 会话没有可用的截图后端：未找到 xdg-desktop-portal 的 "
+                           "Screenshot 接口，也没有安装 grim。请安装 xdg-desktop-portal-gnome 或 grim。");
         return;
     }
 
@@ -129,7 +194,24 @@ void ScreenCapturer::captureWayland() {
     QString parentWindow = "wayland:";
 
     // Use asynchronous DBus call so the main Qt GUI thread is not blocked
-    m_portal->asyncCall("Screenshot", parentWindow, options);
+    QDBusPendingCall pending = m_portal->asyncCall("Screenshot", parentWindow, options);
+
+    // If the portal rejects the call (unknown method, no permission, ...), the
+    // Request.Response signal never arrives; fall back to grim in that case too.
+    auto *watcher = new QDBusPendingCallWatcher(pending, this);
+    connect(watcher, &QDBusPendingCallWatcher::finished, this, [this](QDBusPendingCallWatcher *w) {
+        w->deleteLater();
+        if (!w->isError()) {
+            return;
+        }
+        qWarning() << "Portal Screenshot call failed:" << w->error().message();
+        if (m_grimAvailable) {
+            captureWithGrim();
+        } else {
+            m_isCapturing = false;
+            emit captureFailed("Portal 截图失败: " + w->error().message());
+        }
+    });
 }
 
 void ScreenCapturer::onPortalResponse(uint response, const QVariantMap &results) {
