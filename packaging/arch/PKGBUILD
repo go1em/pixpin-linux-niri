@@ -1,25 +1,29 @@
 # Maintainer: realsky <realsky@local>
 pkgname=pixpin
-pkgver=1.0.0
+pkgver=1.0.8
 pkgrel=1
 pkgdesc="Smart Screenshot, Pin and Offline OCR tool for Linux (PixPin Port)"
 arch=('x86_64')
-url="https://github.com/realsky/pixpin-linux"
+url="https://github.com/go1em/pixpin-linux-niri"
 license=('MIT')
 depends=('qt6-base' 'qt6-svg' 'tesseract' 'leptonica')
 optdepends=(
+    'grim: Wayland 截图后端（无 Portal Screenshot 接口时自动回退，如 niri/Sway/Hyprland）'
+    'xdg-desktop-portal-gnome: Wayland 截图后端（GNOME/KDE 常规方案）'
     'python: RapidOCR advanced scene text recognition'
     'python-pip: Install rapidocr_onnxruntime'
 )
 makedepends=('cmake' 'ninja' 'gcc')
-source=("$pkgname-$pkgver.tar.gz")
-sha256sums=('SKIP')
+# 源码直接取自本仓库（本文件位于 <repo>/packaging/arch），
+# 不再依赖仓库中并不存在的 pixpin-<ver>.tar.gz。
+source=()
+sha256sums=()
 
 build() {
-    cmake -B build -S "$pkgname-$pkgver" \
+    cmake -B build -S "$startdir/../.." \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX=/usr
-    cmake --build build -j$(nproc)
+    cmake --build build -j"$(nproc)"
 }
 
 package() {

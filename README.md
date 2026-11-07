@@ -14,7 +14,7 @@
 
 | 功能模块 | 特性说明 |
 | :--- | :--- |
-| **Wayland / X11 双架构** | 完美适配 GNOME Wayland (`XDG Desktop Portal`) 及传统 X11，彻底告别截图黑屏或权限拒绝。 |
+| **Wayland / X11 双架构** | 完美适配 GNOME/KDE Wayland（`XDG Desktop Portal`）及传统 X11；在 niri / Sway / Hyprland 等合成器上，若系统没有 Portal 截图后端，会自动回退到 `grim`（wlr-screencopy），不再静默失败。 |
 | **极致 4K 160Hz 性能** | 采用局部脏区刷新（Dirty-rect Damage Blit）与打孔透视算法，拖拽帧时间仅 **0.09ms (10,842 FPS)**，4K 极速丝滑无拖影。 |
 | **矩形 / 圆形 / 椭圆截图** | 工具栏一键切换选区形状（或快捷键 `Tab` / `R` / `E`），按住 `Shift` 拖拽自动锁定 **1:1 正圆 / 正方形**。 |
 | **透明背景 PNG 导出** | 圆形与椭圆截图导出时外部区域保留 **100% 真实 Alpha 透明**，保存 PNG 或复制剪贴板时完美无白边、无黑角。 |
@@ -33,7 +33,7 @@
 
 ```bash
 # 下载并安装 deb 软件包
-sudo dpkg -i pixpin_1.0.0_amd64.deb
+sudo dpkg -i pixpin_1.0.8_amd64.deb
 
 # 如果缺少基础依赖，执行自动修复
 sudo apt-get install -f -y
@@ -44,8 +44,8 @@ sudo apt-get install -f -y
 适用于任何 Linux 发行版（Fedora、Arch、openSUSE、CentOS 等）：
 
 ```bash
-tar -xzvf pixpin-1.0.0-linux-x86_64.tar.gz
-cd pixpin-1.0.0-linux-x86_64
+tar -xzvf pixpin-1.0.8-linux-x86_64.tar.gz
+cd pixpin-1.0.8-linux-x86_64
 
 # 免 root 安装到 ~/.local (推荐)：
 ./install.sh
@@ -58,11 +58,30 @@ sudo ./install.sh
 
 ### 3. Arch Linux / Manjaro
 
-可直接使用项目内置的 PKGBUILD 快速打包安装：
+项目内置 PKGBUILD，源码直接取自仓库本身（无需预打包 tarball）：
 
 ```bash
-cd packaging/arch
+git clone https://github.com/go1em/pixpin-linux-niri.git
+cd pixpin-linux-niri/packaging/arch
 makepkg -si
+```
+
+### 4. niri / Sway / Hyprland 等合成器
+
+这类合成器默认没有可用的 `org.freedesktop.portal.Screenshot` 后端（Arch 上只装 `xdg-desktop-portal-gtk` 时它并不实现该接口）。PixPin 在启动时探测该接口，不可用即回退到 `grim`，无需额外配置：
+
+```bash
+sudo pacman -S grim          # 回退方案（wlr-screencopy）
+# 或：sudo pacman -S xdg-desktop-portal-gnome   # 提供 Portal 截图后端
+```
+
+PixPin 没有内置全局热键设置，快捷键由合成器/桌面环境绑定到命令行。以 niri 为例（`~/.config/niri/config.kdl`）：
+
+```kdl
+binds {
+    Ctrl+F1 { spawn "pixpin" "--capture"; }
+    Ctrl+F2 { spawn "pixpin" "--pin"; }
+}
 ```
 
 ---
@@ -152,13 +171,15 @@ sudo dnf install -y gcc-c++ cmake ninja-build \
 # Arch Linux
 sudo pacman -S --needed base-devel cmake ninja \
     qt6-base qt6-svg tesseract leptonica
+# 可选：无 Portal 截图后端时用于回退
+sudo pacman -S grim
 ```
 
 ### 2. 编译与打包
 
 ```bash
-git clone https://github.com/realsky/pixpin-linux.git
-cd pixpin-linux
+git clone https://github.com/go1em/pixpin-linux-niri.git
+cd pixpin-linux-niri
 
 # 一键编译并打包 Release 版本
 ./scripts/build-release.sh
@@ -184,8 +205,8 @@ pixpin-linux/
 │   ├── portable/               # 通用便携安装/卸载脚本 (install.sh / uninstall.sh)
 │   └── rpm/pixpin.spec         # Fedora/RPM 打包规范
 ├── releases/                   # 预编译二进制发行文件
-│   ├── pixpin_1.0.0_amd64.deb
-│   ├── pixpin-1.0.0-linux-x86_64.tar.gz
+│   ├── pixpin_1.0.8_amd64.deb
+│   ├── pixpin-1.0.8-linux-x86_64.tar.gz
 │   └── SHA256SUMS.txt
 ├── scripts/                    # 实用运维与打包脚本
 │   ├── build-release.sh        # 一键 Release 构建脚本

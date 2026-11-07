@@ -50,11 +50,17 @@ jobs:
         run: |
           cpack -G "DEB;TGZ"
 
+      - name: Determine version
+        id: ver
+        run: |
+          VERSION=$(sed -n 's/^project(pixpin VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
       - name: Prepare Release Artifacts
         run: |
           mkdir -p dist
-          mv build/*.deb dist/pixpin_${GITHUB_REF_NAME}_amd64.deb 2>/dev/null || mv build/*.deb dist/pixpin_1.0.0_amd64.deb
-          mv build/*.tar.gz dist/pixpin-1.0.0-linux-x86_64.tar.gz
+          mv build/*.deb dist/pixpin_${{ steps.ver.outputs.version }}_amd64.deb
+          mv build/*.tar.gz dist/pixpin-${{ steps.ver.outputs.version }}-linux-x86_64.tar.gz
           cd dist
           sha256sum * > SHA256SUMS.txt
 

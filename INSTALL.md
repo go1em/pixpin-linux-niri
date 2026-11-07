@@ -21,6 +21,7 @@
 - **操作系统**: Linux (内核 5.4 及以上)
 - **桌面环境**: GNOME、KDE Plasma、XFCE、DDE、Cinnamon、MATE 等
 - **显示服务**: Wayland (GNOME/KDE/Portal 兼容) 或 X11
+- **Wayland 截图后端**: `xdg-desktop-portal` + 实现 `Screenshot` 的后端（如 `xdg-desktop-portal-gnome`），或 `grim`（niri/Sway/Hyprland 场景自动回退）
 - **硬件架构**: x86_64 / amd64
 - **基础依赖**: Qt 6.4+, Tesseract 5.x, Leptonica
 
@@ -37,7 +38,7 @@
 cd releases/
 
 # 2. 使用 dpkg 进行安装
-sudo dpkg -i pixpin_1.0.0_amd64.deb
+sudo dpkg -i pixpin_1.0.8_amd64.deb
 
 # 3. 自动安装缺失的系统库依赖
 sudo apt-get install -f -y
@@ -59,8 +60,8 @@ sudo apt remove pixpin
 
 ```bash
 # 1. 解压便携包
-tar -xzvf pixpin-1.0.0-linux-x86_64.tar.gz
-cd pixpin-1.0.0-linux-x86_64
+tar -xzvf pixpin-1.0.8-linux-x86_64.tar.gz
+cd pixpin-1.0.8-linux-x86_64
 
 # 2. 普通用户安装 (安装到 ~/.local，推荐)
 ./install.sh
@@ -81,13 +82,33 @@ sudo ./uninstall.sh
 
 ## 3. Arch Linux / Manjaro
 
-Arch 用户可直接使用项目内置的 PKGBUILD：
+Arch 用户可直接使用项目内置的 PKGBUILD（源码取自仓库本身，不需要额外下载 tarball）：
 
 ```bash
-git clone https://github.com/realsky/pixpin-linux.git
-cd pixpin-linux/packaging/arch
+git clone https://github.com/go1em/pixpin-linux-niri.git
+cd pixpin-linux-niri/packaging/arch
 makepkg -si
 ```
+
+### niri / Sway / Hyprland
+
+这些合成器默认没有实现 `org.freedesktop.portal.Screenshot` 的后端（Arch 上通常只装了 `xdg-desktop-portal-gtk`，它不实现该接口）。PixPin 会在启动时探测该接口，缺失时自动回退到 `grim`：
+
+```bash
+sudo pacman -S grim                      # 回退方案，wlr-screencopy
+# 二选一：sudo pacman -S xdg-desktop-portal-gnome   # 提供 Portal 截图后端
+```
+
+安装后需在合成器里绑定快捷键，例如 niri（`~/.config/niri/config.kdl`）：
+
+```kdl
+binds {
+    Ctrl+F1 { spawn "pixpin" "--capture"; }
+    Ctrl+F2 { spawn "pixpin" "--pin"; }
+}
+```
+
+改完执行 `niri msg action load-config-file` 生效。
 
 ---
 
@@ -136,6 +157,18 @@ PixPin 采用双引擎设计：
    - **命令**: `pixpin -p`
    - **快捷键**: 按下 `Alt + 2`
 
+### niri / wlroots 系合成器
+
+PixPin 本身不提供快捷键设置界面，常驻进程通过 unix socket 接收命令，快捷键由合成器绑定到 `pixpin --capture` / `pixpin --pin` 即可（冷启动也只有一次开销，之后是毫秒级唤醒）。
+
+```kdl
+// ~/.config/niri/config.kdl
+binds {
+    Ctrl+F1 { spawn "pixpin" "--capture"; }
+    Ctrl+F2 { spawn "pixpin" "--pin"; }
+}
+```
+
 ### KDE Plasma 桌面设置
 1. 打开 **系统设置** -> **快捷键** -> **自定义快捷键**。
 2. 添加新的快捷键命令：
@@ -148,6 +181,17 @@ PixPin 采用双引擎设计：
 
 ### Q: Wayland 下提示权限拒绝或用户取消截屏？
 **A**: 在某些 GNOME Wayland 环境下，首次截屏系统安全中心会弹出 "允许共享屏幕" 对话框，请点击 "允许" 并勾选记住授权。
+
+### Q: 按了快捷键完全没反应（niri / Sway / Hyprland）？
+**A**: 说明当前的 Wayland 截图通路全断了。PixPin 优先走 `org.freedesktop.portal.Screenshot`，没有该接口时回退 `grim`。先手动验证：
+
+```bash
+gdbus introspect --session --dest org.freedesktop.portal.Desktop \
+    --object-path /org/freedesktop/portal/desktop | grep Screenshot
+grim /tmp/t.png && echo grim-ok
+```
+
+`Screenshot` 无输出且 `grim` 报错，就装 `grim`（或 `xdg-desktop-portal-gnome`）。两者都装后仍无反应，用 `pixpin --capture` 手动跑一次看终端报错。
 
 ### Q: 4K 屏幕上是否支持高刷？
 **A**: PixPin Linux 专门针对 4K 160Hz / 144Hz 电竞屏做了局部脏区刷新优化，截取和拖拽过程中帧延迟低于 0.1ms，极其流畅。

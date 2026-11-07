@@ -1,5 +1,5 @@
 Name:           pixpin
-Version:        1.0.0
+Version:        1.0.8
 Release:        1%{?dist}
 Summary:        Smart Screenshot, Pin and Offline OCR tool for Linux
 
@@ -44,5 +44,8 @@ transparent PNG export, and dual OCR engines (PaddleOCR RapidOCR + Tesseract).
 %{_datadir}/pixpin/ocr_worker.py
 
 %changelog
+* Sat Nov 07 2026 realsky <realsky@local> - 1.0.8-1
+- Fall back to grim when no portal Screenshot backend is available
+
 * Sat Oct 17 2026 realsky <realsky@local> - 1.0.0-1
 - Initial 1.0.0 release
