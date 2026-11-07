@@ -20,6 +20,7 @@ CaptureOverlay::CaptureOverlay(QScreen *screen, const QPixmap &screenRawPixmap, 
     , m_screen(screen) {
     // Note: Do NOT set WA_DeleteOnClose, so this overlay can be reused instantly without widget reconstruction!
     setAttribute(Qt::WA_OpaquePaintEvent, true);
+    setAttribute(Qt::WA_NoSystemBackground, true);
     setMouseTracking(true);
 
     winId();
@@ -177,6 +178,87 @@ QRect CaptureOverlay::getHandleRect(const QPoint &center) const {
     return QRect(center.x() - m_handleSize / 2, center.y() - m_handleSize / 2, m_handleSize, m_handleSize);
 }
 
+QRect CaptureOverlay::getBadgeRect(const QRect &r) const {
+    if (!r.isValid() || r.isEmpty()) return QRect();
+
+    static const QFont badgeFont("Sans", 9, QFont::Bold);
+    static const QFontMetrics badgeFm(badgeFont);
+
+    QString dimText;
+    if (m_selectionShape == SelectionShape::Rectangle) {
+        dimText = QString("%1 × %2").arg(r.width()).arg(r.height());
+    } else if (r.width() == r.height()) {
+        dimText = QString("圆 ⌀ %1").arg(r.width());
+    } else {
+        dimText = QString("椭圆 %1 × %2").arg(r.width()).arg(r.height());
+    }
+
+    int textW = badgeFm.horizontalAdvance(dimText) + 12;
+    int textH = badgeFm.height() + 6;
+
+    int badgeY = r.top() - textH - 4;
+    if (badgeY < 4) badgeY = r.top() + 4;
+
+    return QRect(r.left(), badgeY, textW, textH);
+}
+
+QRegion CaptureOverlay::calculateDirtyRegion(const QRect &oldR, const QRect &newR) const {
+    QRect r1 = oldR.normalized();
+    QRect r2 = newR.normalized();
+
+    if (!r1.isValid() || r1.isEmpty()) {
+        if (!r2.isValid() || r2.isEmpty()) return QRegion();
+        return QRegion(r2.adjusted(-15, -40, 15, 15).intersected(rect()));
+    }
+    if (!r2.isValid() || r2.isEmpty()) {
+        return QRegion(r1.adjusted(-15, -40, 15, 15).intersected(rect()));
+    }
+
+    if (m_selectionShape != SelectionShape::Rectangle) {
+        // For ellipse mode, union old and new bounding box
+        return QRegion(r1.united(r2).adjusted(-15, -40, 15, 15).intersected(rect()));
+    }
+
+    // High performance delta region for rectangle mode:
+    QRegion dirty;
+
+    // 1. Interior transition strips:
+    dirty += QRegion(r1).xored(QRegion(r2));
+
+    // 2. Borders: 4px thickness to cover 2px border line and antialiasing margins
+    dirty += QRegion(r1.adjusted(-4, -4, 4, 4)).subtracted(r1.adjusted(4, 4, -4, -4));
+    dirty += QRegion(r2.adjusted(-4, -4, 4, 4)).subtracted(r2.adjusted(4, 4, -4, -4));
+
+    // 3. Size badges:
+    QRect oldBadge = getBadgeRect(r1);
+    QRect newBadge = getBadgeRect(r2);
+    if (!oldBadge.isEmpty()) dirty += oldBadge.adjusted(-3, -3, 3, 3);
+    if (!newBadge.isEmpty()) dirty += newBadge.adjusted(-3, -3, 3, 3);
+
+    // 4. Handles if in Resizing or Selected state
+    if (m_state == CaptureState::Resizing || m_state == CaptureState::Selected) {
+        auto addHandles = [this, &dirty](const QRect &r) {
+            QList<QPoint> handles = {
+                r.topLeft(),
+                QPoint(r.center().x(), r.top()),
+                r.topRight(),
+                QPoint(r.right(), r.center().y()),
+                r.bottomRight(),
+                QPoint(r.center().x(), r.bottom()),
+                r.bottomLeft(),
+                QPoint(r.left(), r.center().y())
+            };
+            for (const QPoint &pt : handles) {
+                dirty += getHandleRect(pt).adjusted(-2, -2, 2, 2);
+            }
+        };
+        addHandles(r1);
+        addHandles(r2);
+    }
+
+    return dirty.intersected(rect());
+}
+
 void CaptureOverlay::updateCursorForHandle(ResizeHandle handle) {
     switch (handle) {
     case ResizeHandle::TopLeft:
@@ -209,71 +291,79 @@ void CaptureOverlay::updateCursorForHandle(ResizeHandle handle) {
 
 void CaptureOverlay::paintEvent(QPaintEvent *event) {
     QPainter p(this);
-    const QRect clip = event->rect();
-
-    // 1. Draw base screenshot for dirty clip region
-    p.drawPixmap(clip, m_scaledPixmap, clip);
-
+    const QRegion dirtyRegion = event->region();
     const QColor dimColor(0, 0, 0, 115);
 
-    if (!m_selectedRect.isValid() || m_selectedRect.isEmpty()) {
-        p.fillRect(clip, dimColor);
-    } else {
+    // 1. Draw only the dirty background strips (avoids blitting millions of unchanged pixels)
+    for (const QRect &clip : dirtyRegion) {
+        p.drawPixmap(clip, m_scaledPixmap, clip);
+
+        if (!m_selectedRect.isValid() || m_selectedRect.isEmpty()) {
+            p.fillRect(clip, dimColor);
+        } else {
+            QRect r = m_selectedRect.normalized();
+            if (m_selectionShape == SelectionShape::Rectangle) {
+                // Fill 4 surrounding bands intersecting clip
+                if (r.top() > clip.top()) {
+                    p.fillRect(QRect(clip.left(), clip.top(), clip.width(), r.top() - clip.top()), dimColor);
+                }
+                if (r.bottom() < clip.bottom()) {
+                    p.fillRect(QRect(clip.left(), r.bottom() + 1, clip.width(), clip.bottom() - r.bottom()), dimColor);
+                }
+                int midTop = std::max(clip.top(), r.top());
+                int midBottom = std::min(clip.bottom(), r.bottom());
+                if (midTop <= midBottom) {
+                    int midHeight = midBottom - midTop + 1;
+                    if (r.left() > clip.left()) {
+                        p.fillRect(QRect(clip.left(), midTop, r.left() - clip.left(), midHeight), dimColor);
+                    }
+                    if (r.right() < clip.right()) {
+                        p.fillRect(QRect(r.right() + 1, midTop, clip.right() - r.right(), midHeight), dimColor);
+                    }
+                }
+            } else {
+                // Ellipse shape with fast OddEvenFill rule
+                QPainterPath path;
+                path.setFillRule(Qt::OddEvenFill);
+                path.addRect(clip);
+                path.addEllipse(r);
+                p.fillPath(path, dimColor);
+            }
+        }
+    }
+
+    if (m_selectedRect.isValid() && !m_selectedRect.isEmpty()) {
         QRect r = m_selectedRect.normalized();
-        if (m_selectionShape == SelectionShape::Rectangle) {
-            // Fill 4 surrounding bands intersecting clip
-            if (r.top() > clip.top()) {
-                p.fillRect(QRect(clip.left(), clip.top(), clip.width(), r.top() - clip.top()), dimColor);
+
+        // 2. Render annotations inside selection (only if any exist!)
+        if (m_annotations && !m_annotations->isEmpty()) {
+            p.save();
+            p.setRenderHint(QPainter::Antialiasing, true);
+            if (m_selectionShape == SelectionShape::Rectangle) {
+                p.setClipRect(r);
+            } else {
+                QPainterPath ellipsePath;
+                ellipsePath.addEllipse(r);
+                p.setClipPath(ellipsePath);
             }
-            if (r.bottom() < clip.bottom()) {
-                p.fillRect(QRect(clip.left(), r.bottom() + 1, clip.width(), clip.bottom() - r.bottom()), dimColor);
-            }
-            int midTop = std::max(clip.top(), r.top());
-            int midBottom = std::min(clip.bottom(), r.bottom());
-            if (midTop <= midBottom) {
-                int midHeight = midBottom - midTop + 1;
-                if (r.left() > clip.left()) {
-                    p.fillRect(QRect(clip.left(), midTop, r.left() - clip.left(), midHeight), dimColor);
-                }
-                if (r.right() < clip.right()) {
-                    p.fillRect(QRect(r.right() + 1, midTop, clip.right() - r.right(), midHeight), dimColor);
-                }
-            }
-        } else {
-            // Ellipse shape
-            QPainterPath dimPath;
-            dimPath.addRect(clip);
-            QPainterPath ellipsePath;
-            ellipsePath.addEllipse(r);
-            dimPath = dimPath.subtracted(ellipsePath);
-            p.fillPath(dimPath, dimColor);
+            m_annotations->render(p, m_rawImage);
+            p.restore();
         }
 
-        // Render annotations inside selection
-        p.save();
-        p.setRenderHint(QPainter::Antialiasing, true);
-        if (m_selectionShape == SelectionShape::Rectangle) {
-            p.setClipRect(r);
-        } else {
-            QPainterPath ellipsePath;
-            ellipsePath.addEllipse(r);
-            p.setClipPath(ellipsePath);
-        }
-        m_annotations->render(p, m_rawImage);
-        p.restore();
-
-        // Selection Border
-        p.setRenderHint(QPainter::Antialiasing, true);
+        // 3. Selection Border (use crisp pixel-perfect lines for rectangle, anti-aliased for ellipse)
         p.setPen(QPen(QColor(0, 122, 255), 2));
         p.setBrush(Qt::NoBrush);
         if (m_selectionShape == SelectionShape::Rectangle) {
+            p.setRenderHint(QPainter::Antialiasing, false);
             p.drawRect(r);
         } else {
+            p.setRenderHint(QPainter::Antialiasing, true);
             p.drawEllipse(r);
         }
 
-        // Control Points (Handles)
+        // 4. Control Points (Handles)
         if (m_state == CaptureState::Selected || m_state == CaptureState::Resizing) {
+            p.setRenderHint(QPainter::Antialiasing, false);
             p.setPen(QPen(QColor(0, 122, 255), 1.5));
             p.setBrush(Qt::white);
 
@@ -293,29 +383,25 @@ void CaptureOverlay::paintEvent(QPaintEvent *event) {
             }
         }
 
-        // Dimension badge with cached static font metrics
-        static const QFont badgeFont("Sans", 9, QFont::Bold);
-        static const QFontMetrics badgeFm(badgeFont);
-        QString dimText;
-        if (m_selectionShape == SelectionShape::Rectangle) {
-            dimText = QString("%1 × %2").arg(r.width()).arg(r.height());
-        } else if (r.width() == r.height()) {
-            dimText = QString("圆 ⌀ %1").arg(r.width());
-        } else {
-            dimText = QString("椭圆 %1 × %2").arg(r.width()).arg(r.height());
+        // 5. Dimension badge
+        QRect badgeRect = getBadgeRect(r);
+        if (!badgeRect.isEmpty()) {
+            static const QFont badgeFont("Sans", 9, QFont::Bold);
+            p.setFont(badgeFont);
+
+            QString dimText;
+            if (m_selectionShape == SelectionShape::Rectangle) {
+                dimText = QString("%1 × %2").arg(r.width()).arg(r.height());
+            } else if (r.width() == r.height()) {
+                dimText = QString("圆 ⌀ %1").arg(r.width());
+            } else {
+                dimText = QString("椭圆 %1 × %2").arg(r.width()).arg(r.height());
+            }
+
+            p.fillRect(badgeRect, QColor(20, 20, 20, 210));
+            p.setPen(Qt::white);
+            p.drawText(badgeRect, Qt::AlignCenter, dimText);
         }
-
-        p.setFont(badgeFont);
-        int textW = badgeFm.horizontalAdvance(dimText) + 12;
-        int textH = badgeFm.height() + 6;
-
-        int badgeY = r.top() - textH - 4;
-        if (badgeY < 4) badgeY = r.top() + 4;
-
-        QRect badgeRect(r.left(), badgeY, textW, textH);
-        p.fillRect(badgeRect, QColor(20, 20, 20, 210));
-        p.setPen(Qt::white);
-        p.drawText(badgeRect, Qt::AlignCenter, dimText);
     }
 }
 
@@ -403,7 +489,7 @@ void CaptureOverlay::mouseMoveEvent(QMouseEvent *event) {
             curPos = QPoint(m_startPos.x() + signX * side, m_startPos.y() + signY * side);
         }
         m_selectedRect = QRect(m_startPos, curPos).normalized();
-        QRect dirty = oldRect.united(m_selectedRect).adjusted(-15, -40, 15, 15).intersected(rect());
+        QRegion dirty = calculateDirtyRegion(oldRect, m_selectedRect);
         update(dirty);
         return;
     }
@@ -414,7 +500,7 @@ void CaptureOverlay::mouseMoveEvent(QMouseEvent *event) {
         m_selectedRect.translate(delta);
         m_lastMousePos = pos;
         m_toolbar->updatePosition(m_selectedRect, rect());
-        QRect dirty = oldRect.united(m_selectedRect).adjusted(-15, -40, 15, 15).intersected(rect());
+        QRegion dirty = calculateDirtyRegion(oldRect, m_selectedRect);
         update(dirty);
         return;
     }
@@ -435,7 +521,7 @@ void CaptureOverlay::mouseMoveEvent(QMouseEvent *event) {
         }
         m_selectedRect = r.normalized();
         m_toolbar->updatePosition(m_selectedRect, rect());
-        QRect dirty = oldRect.united(m_selectedRect).adjusted(-15, -40, 15, 15).intersected(rect());
+        QRegion dirty = calculateDirtyRegion(oldRect, m_selectedRect);
         update(dirty);
         return;
     }

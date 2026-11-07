@@ -96,6 +96,7 @@ public:
 
     void addText(const QPoint &pos, const QString &text);
 
+    bool isEmpty() const { return m_items.isEmpty() && !m_isDrawing; }
     bool canUndo() const { return !m_items.isEmpty(); }
     void undo();
     void clear();

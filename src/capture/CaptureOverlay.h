@@ -68,6 +68,8 @@ private:
     ResizeHandle hitTest(const QPoint &pos) const;
     void updateCursorForHandle(ResizeHandle handle);
     QRect getHandleRect(const QPoint &center) const;
+    QRect getBadgeRect(const QRect &normalizedRect) const;
+    QRegion calculateDirtyRegion(const QRect &oldR, const QRect &newR) const;
     QPixmap getComposedPixmap(bool highRes = false) const;
 
     void onCopy();

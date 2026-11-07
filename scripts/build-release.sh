@@ -5,7 +5,7 @@ set -e
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="$REPO_ROOT/build"
 RELEASES_DIR="$REPO_ROOT/releases"
-VERSION="1.0.7"
+VERSION="1.0.8"
 
 echo "=== 正在编译与打包 PixPin Linux v$VERSION ==="
 
